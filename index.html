@@ -4,10 +4,34 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>庫存管理平面圖系統</title>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src https://*.firebaseio.com https://*.googleapis.com https://firestore.googleapis.com wss://*.firebaseio.com;">
 <script src="https://unpkg.com/vue@3/dist/vue.global.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+  import { getFirestore, doc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDejJkwjZC1tohHKeqd9pnmwKOlEwIZAQE",
+    authDomain: "stock-floorplan-wms.firebaseapp.com",
+    projectId: "stock-floorplan-wms",
+    storageBucket: "stock-floorplan-wms.firebasestorage.app",
+    messagingSenderId: "799052594046",
+    appId: "1:799052594046:web:e405a43499289b8b9f112f"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getFirestore(app);
+
+  // Expose globally for Vue app
+  window.__wmsDb  = db;
+  window.__wmsDoc = () => doc(db, 'wms', 'floors');
+  window.__wmsSetDoc   = setDoc;
+  window.__wmsSnapshot = onSnapshot;
+  window.__wmsReady = true;
+  window.dispatchEvent(new Event('wms-firebase-ready'));
+</script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: 'Microsoft JhengHei', Arial, sans-serif; background: #f0f2f5; color: #333; min-height: 100vh; }
@@ -19,6 +43,9 @@ body { font-family: 'Microsoft JhengHei', Arial, sans-serif; background: #f0f2f5
 }
 .navbar-top { display: flex; align-items: center; padding: 10px 24px 6px; }
 .navbar-brand { font-size: 17px; font-weight: 700; letter-spacing: .5px; display: flex; align-items: center; gap: 8px; }
+.sync-badge { font-size: 11px; padding: 3px 10px; border-radius: 20px; background: rgba(255,255,255,.15); color: #fff; white-space: nowrap; }
+.sync-badge.synced { background: rgba(34,197,94,.25); }
+.sync-badge.offline { background: rgba(239,68,68,.25); }
 .nav-tabs { display: flex; gap: 2px; padding: 0 16px; overflow-x: auto; scrollbar-width: none; }
 .nav-tabs::-webkit-scrollbar { display: none; }
 .nav-tab {
@@ -269,6 +296,12 @@ code { background: #f1f5fb; padding: 2px 6px; border-radius: 4px; font-family: m
       <div class="navbar-brand">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
         庫存管理平面圖系統
+      </div>
+      <div class="sync-badge" :class="syncStatus" style="margin-left:auto;">
+        <span v-if="syncStatus==='synced'">☁️ 已同步</span>
+        <span v-else-if="syncStatus==='saving'">⏳ 同步中…</span>
+        <span v-else-if="syncStatus==='offline'">📴 離線</span>
+        <span v-else style="opacity:.5">⏳ 連線中…</span>
       </div>
     </div>
     <div class="nav-tabs">
@@ -780,66 +813,113 @@ createApp({
     let uid = 1;
     const nextId = () => String(uid++);
 
+    // ── Sync status ──
+    const syncStatus = ref('init'); // 'init' | 'synced' | 'saving' | 'offline'
+
     // ── Persist ──
     let saveTimer = null;
-    function saveNow() {
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(floors.value)); }
-      catch(e) { console.error('Save failed:', e); }
-    }
-    function scheduleSave() {
-      if (saveTimer) clearTimeout(saveTimer);
-      saveTimer = setTimeout(saveNow, 300);
+    let _ignoreNextWatch = false;
+
+    function applyData(data) {
+      const migLayout = (zone, startRow) => {
+        zone.slots.forEach((s, i) => {
+          if (s.gx == null) s.gx = i % COLS;
+          if (s.gy == null) s.gy = startRow + Math.floor(i / COLS);
+        });
+      };
+      data.forEach(f => {
+        let rowOffset = 0;
+        (f.zones||[]).forEach(z => {
+          if (!z.code && z.prefix) z.code = z.prefix;
+          if (!z.code) z.code = '?';
+          (z.slots||[]).forEach(s => {
+            if (!Array.isArray(s.items)) {
+              s.items = s.inv
+                ? [{ productNo: s.inv.productNo||'', productName: s.inv.productName||'', qty: s.inv.qty||0, avail: s.inv.qty||0, category:'', mgmtNo:'' }]
+                : [];
+              delete s.inv;
+            }
+          });
+          migLayout(z, rowOffset);
+          rowOffset += Math.ceil(z.slots.length / COLS) + 2;
+        });
+      });
+      let maxId = 0;
+      const scan = n => { const v = parseInt(n)||0; if (v > maxId) maxId = v; };
+      data.forEach(f => { scan(f.id); (f.zones||[]).forEach(z => { scan(z.id); (z.slots||[]).forEach(s => scan(s.id)); }); });
+      uid = maxId + 1;
+      return data;
     }
 
-    // Flush pending save before tab closes / refreshes
+    function saveLocal(data) {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e) {}
+    }
+
+    async function saveCloud(data) {
+      if (!window.__wmsReady) return;
+      try {
+        syncStatus.value = 'saving';
+        await window.__wmsSetDoc(window.__wmsDoc(), { data: JSON.stringify(data) });
+        syncStatus.value = 'synced';
+      } catch(e) {
+        console.warn('Cloud save failed:', e);
+        syncStatus.value = 'offline';
+      }
+    }
+
+    function scheduleSave() {
+      saveLocal(floors.value);
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => saveCloud(floors.value), 1500);
+    }
+
     window.addEventListener('beforeunload', () => {
-      if (saveTimer) { clearTimeout(saveTimer); saveNow(); }
+      if (saveTimer) { clearTimeout(saveTimer); saveCloud(floors.value); }
     });
 
-    watch(floors, scheduleSave, { deep: true });
+    watch(floors, () => {
+      if (_ignoreNextWatch) { _ignoreNextWatch = false; return; }
+      scheduleSave();
+    }, { deep: true });
+
+    function setupCloudSync() {
+      if (!window.__wmsReady) return;
+      window.__wmsSnapshot(window.__wmsDoc(), snap => {
+        if (!snap.exists()) { syncStatus.value = 'synced'; return; }
+        try {
+          const remote = JSON.parse(snap.data().data || '[]');
+          const localRaw = localStorage.getItem(STORAGE_KEY);
+          // Only apply remote if it differs from current
+          if (JSON.stringify(floors.value) !== JSON.stringify(remote)) {
+            _ignoreNextWatch = true;
+            floors.value = applyData(remote);
+            saveLocal(remote);
+          }
+          syncStatus.value = 'synced';
+        } catch(e) { console.warn('Snapshot parse error:', e); }
+      }, err => {
+        console.warn('Snapshot error:', err);
+        syncStatus.value = 'offline';
+      });
+    }
 
     function load() {
+      // 1. Load from localStorage immediately (instant display)
       try {
-        const raw = localStorage.getItem(STORAGE_KEY)
-                 || localStorage.getItem('wms_floors'); // migrate old key
-        if (!raw) return;
-        const data = JSON.parse(raw);
-        // Ensure items array exists on all slots (migration)
-        // Auto-layout helper for migration
-        const migLayout = (zone, startRow) => {
-          zone.slots.forEach((s, i) => {
-            if (s.gx == null) s.gx = i % COLS;
-            if (s.gy == null) s.gy = startRow + Math.floor(i / COLS);
-          });
-        };
-        data.forEach(f => {
-          let rowOffset = 0;
-          (f.zones||[]).forEach(z => {
-            // prefix → code 遷移
-            if (!z.code && z.prefix) z.code = z.prefix;
-            if (!z.code) z.code = '?';
-            (z.slots||[]).forEach(s => {
-              if (!Array.isArray(s.items)) {
-                s.items = s.inv
-                  ? [{ productNo: s.inv.productNo||'', productName: s.inv.productName||'', qty: s.inv.qty||0, avail: s.inv.qty||0, category:'', mgmtNo:'' }]
-                  : [];
-                delete s.inv;
-              }
-            });
-            // 補 gx/gy
-            migLayout(z, rowOffset);
-            const rows = Math.ceil(z.slots.length / COLS);
-            rowOffset += rows + 2;
-          });
-        });
-        floors.value = data;
-        let maxId = 0;
-        const scan = n => { const v = parseInt(n)||0; if (v > maxId) maxId = v; };
-        data.forEach(f => { scan(f.id); (f.zones||[]).forEach(z => { scan(z.id); (z.slots||[]).forEach(s => scan(s.id)); }); });
-        uid = maxId + 1;
-        // Save to new key
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('wms_floors');
+        if (raw) {
+          const data = JSON.parse(raw);
+          floors.value = applyData(data);
+          saveLocal(data);
+        }
       } catch(e) { console.error('Load failed:', e); }
+
+      // 2. Then connect to Firestore for live sync
+      if (window.__wmsReady) {
+        setupCloudSync();
+      } else {
+        window.addEventListener('wms-firebase-ready', setupCloudSync, { once: true });
+      }
     }
 
     // ── Floor/Zone CRUD ──
@@ -1373,6 +1453,7 @@ createApp({
       allZones, totalSlots, allSlots,
       filteredZones,
       CELL_W, CELL_H, draggingId,
+      syncStatus,
       editMode, toggleEditMode,
       selectedSlotIds, clearSelection, moveSelectedSlots, deleteSelectedSlots, onCanvasKeydown,
       currentFloorSlotItems, zoneGroups, canvasW, canvasH,
