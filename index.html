@@ -1125,11 +1125,16 @@ createApp({
         const selTop    = Math.min(y0, y1);
         const selRight  = Math.max(x0, x1);
         const selBottom = Math.max(y0, y1);
+        const isDrag    = selRight - selLeft >= 8 || selBottom - selTop >= 8;
 
-        if (selRight - selLeft < 8 && selBottom - selTop < 8) {
+        if (!isDrag) {
           if (!e.ctrlKey && !e.metaKey) clearSelection();
           return;
         }
+
+        // 攔截緊接著的 click 事件，避免 @click.self 清掉剛框選的結果
+        const stopClick = ev => ev.stopPropagation();
+        canvas.addEventListener('click', stopClick, { capture: true, once: true });
 
         if (!activeFloor.value) return;
         const hit = [];
@@ -1147,8 +1152,6 @@ createApp({
           selectedSlotIds.value = e.ctrlKey || e.metaKey
             ? [...new Set([...selectedSlotIds.value, ...hit])]
             : hit;
-        } else if (!e.ctrlKey && !e.metaKey) {
-          clearSelection();
         }
       };
 
