@@ -266,6 +266,7 @@ code { background: #f1f5fb; padding: 2px 6px; border-radius: 4px; font-family: m
 .map-canvas.readonly .slot-abs { cursor: pointer; }
 .slot-abs.selected { outline: 2.5px solid #2563a8; outline-offset: 1px; z-index: 20; }
 .slot-abs.selected.dragging { z-index: 51; }
+.slot-abs.lasso-hover { outline: 2px solid #f59e0b; background: rgba(245,158,11,.18) !important; z-index: 15; transition: none; }
 .sel-toolbar {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   background: #1e293b; color: #fff; border-radius: 8px;
@@ -516,7 +517,8 @@ code { background: #f1f5fb; padding: 2px 6px; border-radius: 4px; font-family: m
                     class="slot-abs"
                     :class="[slotClass(si.slot),
                              draggingId===si.slot.id?'dragging':'',
-                             selectedSlotIds.includes(si.slot.id)?'selected':'']"
+                             selectedSlotIds.includes(si.slot.id)?'selected':'',
+                             lassoHitIds.includes(si.slot.id)?'lasso-hover':'']"
                     :style="{
                       left: si.slot.gx*CELL_W+4+'px',
                       top:  si.slot.gy*CELL_H+4+'px',
@@ -1070,6 +1072,22 @@ createApp({
     // ── 框選 (lasso) ──
     const lasso = ref({ active: false, x0: 0, y0: 0, x1: 0, y1: 0 });
 
+    const lassoHitIds = computed(() => {
+      if (!lasso.value.active || !activeFloor.value) return [];
+      const { x0, y0, x1, y1 } = lasso.value;
+      const L = Math.min(x0, x1), R = Math.max(x0, x1);
+      const T = Math.min(y0, y1), B = Math.max(y0, y1);
+      const hit = [];
+      activeFloor.value.zones.forEach(z => {
+        z.slots.forEach(s => {
+          const cx = (s.gx ?? 0) * CELL_W + CELL_W / 2;
+          const cy = (s.gy ?? 0) * CELL_H + CELL_H / 2;
+          if (cx >= L && cx <= R && cy >= T && cy <= B) hit.push(s.id);
+        });
+      });
+      return hit;
+    });
+
     function onCanvasMousedown(e) {
       if (e.button !== 0 || !editMode.value) return;
       const canvas = mapCanvas.value;
@@ -1079,12 +1097,12 @@ createApp({
 
       const wrap = canvas.parentElement;
 
-      // 以 wrap 為基準計算 canvas 空間座標（不受 wrap 捲動影響）
+      // canvas.getBoundingClientRect() 已含捲動偏移，直接相減得 canvas 空間座標
       const getPos = ev => {
-        const r = wrap.getBoundingClientRect();
+        const r = canvas.getBoundingClientRect();
         return {
-          x: ev.clientX - r.left + wrap.scrollLeft,
-          y: ev.clientY - r.top  + wrap.scrollTop,
+          x: ev.clientX - r.left,
+          y: ev.clientY - r.top,
         };
       };
 
@@ -1535,7 +1553,7 @@ createApp({
       filteredZones,
       CELL_W, CELL_H, draggingId,
       syncStatus,
-      lasso, onCanvasMousedown,
+      lasso, lassoHitIds, onCanvasMousedown,
       editMode, toggleEditMode,
       selectedSlotIds, clearSelection, moveSelectedSlots, deleteSelectedSlots, onCanvasKeydown,
       currentFloorSlotItems, zoneGroups, canvasW, canvasH,
