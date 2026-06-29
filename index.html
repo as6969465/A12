@@ -481,7 +481,17 @@ code { background: #f1f5fb; padding: 2px 6px; border-radius: 4px; font-family: m
                   :class="{readonly: !editMode}"
                   :style="{'--cw': CELL_W+'px','--ch': CELL_H+'px', width: canvasW+'px', height: canvasH+'px'}"
                   @click.self="editMode && clearSelection()"
+                  @mousedown.self="onCanvasMousedown"
                   @keydown="onCanvasKeydown">
+                  <!-- 框選矩形 -->
+                  <div v-if="lasso.active" :style="{
+                    position:'absolute', pointerEvents:'none', zIndex:100,
+                    border:'2px dashed #2563a8', background:'rgba(37,99,168,.08)',
+                    left: Math.min(lasso.x0,lasso.x1)+'px',
+                    top:  Math.min(lasso.y0,lasso.y1)+'px',
+                    width: Math.abs(lasso.x1-lasso.x0)+'px',
+                    height:Math.abs(lasso.y1-lasso.y0)+'px'
+                  }"></div>
 
                   <!-- 區域標籤 -->
                   <div v-for="zg in zoneGroups" :key="'lbl-'+zg.zone.id"
@@ -1057,6 +1067,74 @@ createApp({
     const selectedSlotIds = ref([]);
     const clearSelection = () => { selectedSlotIds.value = []; };
 
+    // ── 框選 (lasso) ──
+    const lasso = ref({ active: false, x0: 0, y0: 0, x1: 0, y1: 0 });
+
+    function onCanvasMousedown(e) {
+      if (e.button !== 0 || !editMode.value) return;
+      const canvas = mapCanvas.value;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const startX = e.clientX - rect.left + canvas.scrollLeft;
+      const startY = e.clientY - rect.top  + canvas.scrollTop;
+
+      lasso.value = { active: true, x0: startX, y0: startY, x1: startX, y1: startY };
+
+      const onMove = ev => {
+        const cx = ev.clientX - rect.left + canvas.scrollLeft;
+        const cy = ev.clientY - rect.top  + canvas.scrollTop;
+        lasso.value = { ...lasso.value, x1: cx, y1: cy };
+      };
+
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+
+        const { x0, y0, x1, y1 } = lasso.value;
+        const selLeft   = Math.min(x0, x1);
+        const selTop    = Math.min(y0, y1);
+        const selRight  = Math.max(x0, x1);
+        const selBottom = Math.max(y0, y1);
+        lasso.value = { active: false, x0: 0, y0: 0, x1: 0, y1: 0 };
+
+        // 小於 6px 視為點擊，清除選取
+        if (selRight - selLeft < 6 && selBottom - selTop < 6) {
+          if (!e.ctrlKey && !e.metaKey) clearSelection();
+          return;
+        }
+
+        // 找出框選範圍內的格位
+        if (!activeFloor.value) return;
+        const hit = [];
+        activeFloor.value.zones.forEach(z => {
+          z.slots.forEach(s => {
+            const sx = (s.gx ?? 0) * CELL_W + 4;
+            const sy = (s.gy ?? 0) * CELL_H + 4;
+            const sr = sx + CELL_W - 8;
+            const sb = sy + CELL_H - 8;
+            // 格位中心在框選範圍內即選取
+            const cx = (sx + sr) / 2, cy = (sy + sb) / 2;
+            if (cx >= selLeft && cx <= selRight && cy >= selTop && cy <= selBottom) {
+              hit.push(s.id);
+            }
+          });
+        });
+
+        if (hit.length) {
+          if (e.ctrlKey || e.metaKey) {
+            // Ctrl：加入已選
+            const merged = [...new Set([...selectedSlotIds.value, ...hit])];
+            selectedSlotIds.value = merged;
+          } else {
+            selectedSlotIds.value = hit;
+          }
+        }
+      };
+
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    }
+
     function moveSelectedSlots(dx, dy) {
       if (!activeFloor.value) return;
       activeFloor.value.zones.forEach(z => {
@@ -1454,6 +1532,7 @@ createApp({
       filteredZones,
       CELL_W, CELL_H, draggingId,
       syncStatus,
+      lasso, onCanvasMousedown,
       editMode, toggleEditMode,
       selectedSlotIds, clearSelection, moveSelectedSlots, deleteSelectedSlots, onCanvasKeydown,
       currentFloorSlotItems, zoneGroups, canvasW, canvasH,
