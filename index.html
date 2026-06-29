@@ -481,7 +481,7 @@ code { background: #f1f5fb; padding: 2px 6px; border-radius: 4px; font-family: m
                   :class="{readonly: !editMode}"
                   :style="{'--cw': CELL_W+'px','--ch': CELL_H+'px', width: canvasW+'px', height: canvasH+'px'}"
                   @click.self="editMode && clearSelection()"
-                  @mousedown.self="onCanvasMousedown"
+                  @mousedown="onCanvasMousedown"
                   @keydown="onCanvasKeydown">
                   <!-- 框選矩形 -->
                   <div v-if="lasso.active" :style="{
@@ -1074,46 +1074,55 @@ createApp({
       if (e.button !== 0 || !editMode.value) return;
       const canvas = mapCanvas.value;
       if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const startX = e.clientX - rect.left + canvas.scrollLeft;
-      const startY = e.clientY - rect.top  + canvas.scrollTop;
 
-      lasso.value = { active: true, x0: startX, y0: startY, x1: startX, y1: startY };
+      // 只有點到 canvas 背景本身（或 lasso 矩形）才啟動框選
+      const tgt = e.target;
+      const isCanvasBg = tgt === canvas || tgt.style?.pointerEvents === 'none';
+      if (!isCanvasBg) return;
 
-      const onMove = ev => {
-        const cx = ev.clientX - rect.left + canvas.scrollLeft;
-        const cy = ev.clientY - rect.top  + canvas.scrollTop;
-        lasso.value = { ...lasso.value, x1: cx, y1: cy };
+      const wrap = canvas.parentElement; // map-canvas-wrap（有捲軸的容器）
+
+      const getCanvasPos = ev => {
+        const r = canvas.getBoundingClientRect();
+        return {
+          x: ev.clientX - r.left,
+          y: ev.clientY - r.top,
+        };
       };
 
-      const onUp = () => {
+      const start = getCanvasPos(e);
+      lasso.value = { active: true, x0: start.x, y0: start.y, x1: start.x, y1: start.y };
+
+      const onMove = ev => {
+        const p = getCanvasPos(ev);
+        lasso.value = { active: true, x0: start.x, y0: start.y, x1: p.x, y1: p.y };
+      };
+
+      const onUp = ev => {
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
 
         const { x0, y0, x1, y1 } = lasso.value;
+        lasso.value = { active: false, x0: 0, y0: 0, x1: 0, y1: 0 };
+
         const selLeft   = Math.min(x0, x1);
         const selTop    = Math.min(y0, y1);
         const selRight  = Math.max(x0, x1);
         const selBottom = Math.max(y0, y1);
-        lasso.value = { active: false, x0: 0, y0: 0, x1: 0, y1: 0 };
 
-        // 小於 6px 視為點擊，清除選取
-        if (selRight - selLeft < 6 && selBottom - selTop < 6) {
+        // 小於 8px 視為點擊
+        if (selRight - selLeft < 8 && selBottom - selTop < 8) {
           if (!e.ctrlKey && !e.metaKey) clearSelection();
           return;
         }
 
-        // 找出框選範圍內的格位
         if (!activeFloor.value) return;
         const hit = [];
         activeFloor.value.zones.forEach(z => {
           z.slots.forEach(s => {
-            const sx = (s.gx ?? 0) * CELL_W + 4;
-            const sy = (s.gy ?? 0) * CELL_H + 4;
-            const sr = sx + CELL_W - 8;
-            const sb = sy + CELL_H - 8;
-            // 格位中心在框選範圍內即選取
-            const cx = (sx + sr) / 2, cy = (sy + sb) / 2;
+            // 格位在 canvas 內的中心座標
+            const cx = (s.gx ?? 0) * CELL_W + CELL_W / 2;
+            const cy = (s.gy ?? 0) * CELL_H + CELL_H / 2;
             if (cx >= selLeft && cx <= selRight && cy >= selTop && cy <= selBottom) {
               hit.push(s.id);
             }
@@ -1121,13 +1130,11 @@ createApp({
         });
 
         if (hit.length) {
-          if (e.ctrlKey || e.metaKey) {
-            // Ctrl：加入已選
-            const merged = [...new Set([...selectedSlotIds.value, ...hit])];
-            selectedSlotIds.value = merged;
-          } else {
-            selectedSlotIds.value = hit;
-          }
+          selectedSlotIds.value = e.ctrlKey || e.metaKey
+            ? [...new Set([...selectedSlotIds.value, ...hit])]
+            : hit;
+        } else if (!e.ctrlKey && !e.metaKey) {
+          clearSelection();
         }
       };
 
