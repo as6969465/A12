@@ -1074,31 +1074,29 @@ createApp({
       if (e.button !== 0 || !editMode.value) return;
       const canvas = mapCanvas.value;
       if (!canvas) return;
+      // 若點到區域標籤控件則忽略（slot 的 mousedown 已有 stopPropagation）
+      if (e.target.closest && e.target.closest('.slot-zone-label')) return;
 
-      // 只有點到 canvas 背景本身（或 lasso 矩形）才啟動框選
-      const tgt = e.target;
-      const isCanvasBg = tgt === canvas || tgt.style?.pointerEvents === 'none';
-      if (!isCanvasBg) return;
+      const wrap = canvas.parentElement;
 
-      const wrap = canvas.parentElement; // map-canvas-wrap（有捲軸的容器）
-
-      const getCanvasPos = ev => {
-        const r = canvas.getBoundingClientRect();
+      // 以 wrap 為基準計算 canvas 空間座標（不受 wrap 捲動影響）
+      const getPos = ev => {
+        const r = wrap.getBoundingClientRect();
         return {
-          x: ev.clientX - r.left,
-          y: ev.clientY - r.top,
+          x: ev.clientX - r.left + wrap.scrollLeft,
+          y: ev.clientY - r.top  + wrap.scrollTop,
         };
       };
 
-      const start = getCanvasPos(e);
+      const start = getPos(e);
       lasso.value = { active: true, x0: start.x, y0: start.y, x1: start.x, y1: start.y };
 
       const onMove = ev => {
-        const p = getCanvasPos(ev);
+        const p = getPos(ev);
         lasso.value = { active: true, x0: start.x, y0: start.y, x1: p.x, y1: p.y };
       };
 
-      const onUp = ev => {
+      const onUp = () => {
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
 
@@ -1110,7 +1108,6 @@ createApp({
         const selRight  = Math.max(x0, x1);
         const selBottom = Math.max(y0, y1);
 
-        // 小於 8px 視為點擊
         if (selRight - selLeft < 8 && selBottom - selTop < 8) {
           if (!e.ctrlKey && !e.metaKey) clearSelection();
           return;
@@ -1120,7 +1117,6 @@ createApp({
         const hit = [];
         activeFloor.value.zones.forEach(z => {
           z.slots.forEach(s => {
-            // 格位在 canvas 內的中心座標
             const cx = (s.gx ?? 0) * CELL_W + CELL_W / 2;
             const cy = (s.gy ?? 0) * CELL_H + CELL_H / 2;
             if (cx >= selLeft && cx <= selRight && cy >= selTop && cy <= selBottom) {
